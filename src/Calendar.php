@@ -2,27 +2,44 @@
 
 namespace Webmasterskaya\ProductionCalendar;
 
+use DateInterval;
+use DateTime;
+use Exception;
+
+use function dirname;
+use function in_array;
+use function is_int;
+use function is_null;
+
 class Calendar
 {
 	/**
+	 * Формат даты, для печати
+	 *
 	 * @var string
 	 */
-	public $format = 'Y-m-d';
+	public string $format = 'Y-m-d';
 
 	/**
+	 * Экземпляр класса
+	 *
 	 * @var static
 	 */
-	private static $_instance;
+	private static self $_instance;
 
 	/**
+	 * Массив со справочником дат, загруженным из json
+	 *
 	 * @var array
 	 */
-	protected static $holidays;
+	protected static array $holidays;
 
 	/**
-	 * @var \DateTime
+	 * Дата, на которую установлен курсор
+	 *
+	 * @var DateTime
 	 */
-	private static $date;
+	private static DateTime $date;
 
 	/**
 	 * Возвращает дату, отформатированную согласно установленному формату
@@ -37,9 +54,9 @@ class Calendar
 	/**
 	 * Возвращает дату, в виде объекта \DateTime
 	 *
-	 * @return \DateTime
+	 * @return DateTime
 	 */
-	public static function date(): \DateTime
+	public static function date(): DateTime
 	{
 		return static::$date;
 	}
@@ -57,43 +74,44 @@ class Calendar
 	/**
 	 * Проверяет, является ли дата рабочим днём
 	 *
-	 * @param   \DateTime|string  $date     Дата, которую нужно проверить
+	 * @param null|DateTime|string $date Дата, которую нужно проверить
 	 *
-	 * @param   array             $weekend  Массив с номераи дней, которые принято считать выходными. 0 - воскресенье, 6 - суббота
+	 * @param array $weekend Массив с номера дней, которые принято считать выходными. 0 - воскресенье, 6 - суббота
 	 *
 	 * @return bool
+	 * @throws Exception
 	 */
-	public static function isWorking($date, array $weekend = [6, 0]): bool
+	public static function isWorking($date = null, array $weekend = [6, 0]): bool
 	{
-		return static::isPreHoliday($date) || (!static::isHoliday($date) && !static::isWeekend($date, $weekend));
+		return static::findDateInArray($date, static::getWorksByYear($date))
+			|| static::isPreHoliday($date) || (!static::isHoliday($date) && !static::isWeekend($date, $weekend));
 	}
 
 	/**
 	 * Проверяет, входит ли указанная дата в массив
 	 *
-	 * @param   \DateTime|string  $date   Дата, которую нужно найти
-	 * @param   array             $array  Массив дат, среди которых производится поиск
+	 * @param null|DateTime|string $date Дата, которую нужно найти
+	 * @param array $array Массив дат, среди которых производится поиск
 	 *
-	 * @throws \Exception
 	 * @return bool
+	 * @throws Exception
 	 */
 	protected static function findDateInArray($date, array $array): bool
 	{
 		$date = static::prepareDate($date);
 
 		return in_array($date->format('Y-m-d'), $array);
-
 	}
 
 	/**
 	 * Проверяет, является ли дата предпраздничным днём
 	 *
-	 * @param   \DateTime|string  $date  Дата, которую нужно проверить
+	 * @param null|DateTime|string $date Дата, которую нужно проверить
 	 *
-	 * @throws \Exception
 	 * @return bool
+	 * @throws Exception
 	 */
-	public static function isPreHoliday($date): bool
+	public static function isPreHoliday($date = null): bool
 	{
 		return static::findDateInArray($date, static::getPreHolidaysByYear($date));
 	}
@@ -101,61 +119,60 @@ class Calendar
 	/**
 	 * Проверяет, является ли дата праздничным днём
 	 *
-	 * @param   \DateTime|string  $date  Дата, которую нужно проверить
+	 * @param null|DateTime|string $date Дата, которую нужно проверить
 	 *
-	 * @throws \Exception
 	 * @return bool
+	 * @throws Exception
 	 */
 	public static function isHoliday($date = null): bool
 	{
-		return (static::isWeekend($date) && !static::isPreHoliday($date))
-			|| static::findDateInArray(
-				$date, static::getHolidaysByYear($date)
-			);
+		return static::findDateInArray($date, static::getHolidaysByYear($date));
 	}
 
 	/**
 	 * Проверяет, является ли дата выходным днём
 	 *
-	 * @param   \DateTime|string  $date     Дата, которую нужно проверить
+	 * @param null|DateTime|string $date Дата, которую нужно проверить
 	 *
-	 * @param   array             $weekend  Массив с номераи дней, которые принято считать выходными. 0 - воскресенье, 6 - суббота
+	 * @param array $weekend Массив с номера дней, которые принято считать выходными. 0 - воскресенье, 6 - суббота
 	 *
-	 * @throws \Exception
 	 * @return bool
+	 * @throws Exception
 	 */
-	public static function isWeekend($date, array $weekend = [6, 0]): bool
+	public static function isWeekend($date = null, array $weekend = [6, 0]): bool
 	{
 		$date = static::prepareDate($date);
 
-		return in_array($date->format('w'), $weekend);
+		return static::isHoliday($date)
+			|| (in_array($date->format('w'), $weekend)
+				&& !static::isPreHoliday($date)
+				&& !static::findDateInArray($date, static::getWorksByYear($date)));
 	}
 
 	/**
 	 * Проверяет, является ли дата нерабочим днём
 	 *
-	 * @param   \DateTime|string  $date  Дата, которую нужно проверить
+	 * @param null|DateTime|string $date Дата, которую нужно проверить
 	 *
-	 * @throws \Exception
 	 * @return bool
+	 * @throws Exception
 	 */
-	public static function isNoWorking($date): bool
+	public static function isNoWorking($date = null): bool
 	{
 		return static::findDateInArray($date, static::getNoWorkingByYear($date));
 	}
 
 	/**
-	 * Возвращает массив праздничныз дней в году
+	 * Возвращает массив праздничны дней в году
 	 *
-	 * @param   integer|string|\DateTime  $year  Год, для которого нужно получить список праздничных дней
+	 * @param integer|string|DateTime $year Год, для которого нужно получить список праздничных дней
 	 *
-	 * @throws \Exception
 	 * @return array
+	 * @throws Exception
 	 */
 	protected static function getHolidaysByYear($year): array
 	{
-		if (!is_numeric($year))
-		{
+		if (!is_numeric($year)) {
 			$year = static::prepareDate($year)->format('Y');
 		}
 		$holidays = static::getHolidays();
@@ -166,34 +183,32 @@ class Calendar
 	/**
 	 * Возвращает массив рабочих дней в году
 	 *
-	 * @param   integer|string|\DateTime  $year  Год, для которого нужно получить список рабочих дней
+	 * @param integer|string|DateTime $year Год, для которого нужно получить список рабочих дней
 	 *
-	 * @throws \Exception
 	 * @return array
+	 * @throws Exception
 	 */
-	protected static function getWorkingsByYear($year): array
+	protected static function getWorksByYear($year): array
 	{
-		if (!is_numeric($year))
-		{
+		if (!is_numeric($year)) {
 			$year = static::prepareDate($year)->format('Y');
 		}
 		$holidays = static::getHolidays();
 
-		return $holidays[$year]['workings'] ?? [];
+		return $holidays[$year]['works'] ?? [];
 	}
 
 	/**
 	 * Возвращает массив предпраздничных дней в году
 	 *
-	 * @param   integer|string|\DateTime  $year  Год, для которого нужно получить список предпраздничных дней
+	 * @param integer|string|DateTime $year Год, для которого нужно получить список предпраздничных дней
 	 *
-	 * @throws \Exception
 	 * @return array
+	 * @throws Exception
 	 */
 	protected static function getPreHolidaysByYear($year): array
 	{
-		if (!is_numeric($year))
-		{
+		if (!is_numeric($year)) {
 			$year = static::prepareDate($year)->format('Y');
 		}
 		$holidays = static::getHolidays();
@@ -204,15 +219,14 @@ class Calendar
 	/**
 	 * Возвращает массив нерабочих дней в году
 	 *
-	 * @param   integer|string|\DateTime  $year  Год, для которого нужно получить список нерабочих дней
+	 * @param integer|string|DateTime $year Год, для которого нужно получить список нерабочих дней
 	 *
-	 * @throws \Exception
 	 * @return array
+	 * @throws Exception
 	 */
 	protected static function getNoWorkingByYear($year): array
 	{
-		if (!is_numeric($year))
-		{
+		if (!is_numeric($year)) {
 			$year = static::prepareDate($year)->format('Y');
 		}
 		$holidays = static::getHolidays();
@@ -221,14 +235,14 @@ class Calendar
 	}
 
 	/**
-	 * Находит и возвращает все выходные дни в указанном промежутке дат в указанном формате
+	 * Находит и возвращает все выходные дни в указанном промежутке дат в заданном формате
 	 *
-	 * @param   integer|string|\DateTime  $date_from  Начальная дата поиска
-	 * @param   integer|string|\DateTime  $date_to    Конечная дата поиска
-	 * @param   string|null               $format     Формат возвращаемых дат. см. https://www.php.net/manual/ru/datetime.format.php
+	 * @param integer|string|DateTime $date_from Начальная дата поиска
+	 * @param integer|string|DateTime $date_to Конечная дата поиска
+	 * @param string|null $format Формат возвращаемых дат. см. https://www.php.net/manual/ru/datetime.format.php
 	 *
-	 * @throws \Exception
 	 * @return array
+	 * @throws Exception
 	 */
 	public static function getHolidaysListByInterval($date_from, $date_to, string $format = null): array
 	{
@@ -236,11 +250,10 @@ class Calendar
 
 		$holidaysList = [];
 
-		$lastHoliday    = Calendar::find($date_from)->holiday();
+		$lastHoliday = Calendar::find($date_from)->holiday();
 		$holidaysList[] = $lastHoliday->format($format);
-		while ($lastHoliday->date() <= $date_to)
-		{
-			$lastHoliday    = $lastHoliday->next()->holiday();
+		while ($lastHoliday->date() <= $date_to) {
+			$lastHoliday = $lastHoliday->next()->holiday();
 			$holidaysList[] = $lastHoliday->format($format);
 		}
 
@@ -248,14 +261,14 @@ class Calendar
 	}
 
 	/**
-	 * Находит и возвращает все рабочие дни в указанном промежутке дат в указанном формате
+	 * Находит и возвращает все рабочие дни в указанном промежутке дат в заданном формате
 	 *
-	 * @param   integer|string|\DateTime  $date_from  Начальная дата поиска
-	 * @param   integer|string|\DateTime  $date_to    Конечная дата поиска
-	 * @param   string|null               $format     Формат возвращаемых дат. см. https://www.php.net/manual/ru/datetime.format.php
+	 * @param integer|string|DateTime $date_from Начальная дата поиска
+	 * @param integer|string|DateTime $date_to Конечная дата поиска
+	 * @param string|null $format Формат возвращаемых дат. см. https://www.php.net/manual/ru/datetime.format.php
 	 *
-	 * @throws \Exception
 	 * @return array
+	 * @throws Exception
 	 */
 	public static function getWorkingListByInterval($date_from, $date_to, string $format = null): array
 	{
@@ -263,11 +276,10 @@ class Calendar
 
 		$workingList = [];
 
-		$lastWorking   = Calendar::find($date_from)->working();
+		$lastWorking = Calendar::find($date_from)->working();
 		$workingList[] = $lastWorking->format($format);
-		while ($lastWorking->date() <= $date_to)
-		{
-			$lastWorking   = $lastWorking->next()->working();
+		while ($lastWorking->date() <= $date_to) {
+			$lastWorking = $lastWorking->next()->working();
 			$workingList[] = $lastWorking->format($format);
 		}
 
@@ -275,14 +287,14 @@ class Calendar
 	}
 
 	/**
-	 * Находит и возвращает все нерабочие дни в указанном промежутке дат в указанном формате
+	 * Находит и возвращает все нерабочие дни в указанном промежутке дат в заданном формате
 	 *
-	 * @param   integer|string|\DateTime  $date_from  Начальная дата поиска
-	 * @param   integer|string|\DateTime  $date_to    Конечная дата поиска
-	 * @param   string|null               $format     Формат возвращаемых дат. см. https://www.php.net/manual/ru/datetime.format.php
+	 * @param integer|string|DateTime $date_from Начальная дата поиска
+	 * @param integer|string|DateTime $date_to Конечная дата поиска
+	 * @param string|null $format Формат возвращаемых дат. см. https://www.php.net/manual/ru/datetime.format.php
 	 *
-	 * @throws \Exception
 	 * @return array
+	 * @throws Exception
 	 */
 	public static function getNoWorkingListByInterval($date_from, $date_to, string $format = null): array
 	{
@@ -290,11 +302,10 @@ class Calendar
 
 		$noWorkingList = [];
 
-		$lastNoWorking   = Calendar::find($date_from)->noWorking();
+		$lastNoWorking = Calendar::find($date_from)->noWorking();
 		$noWorkingList[] = $lastNoWorking->format($format);
-		while ($lastNoWorking->date() <= $date_to)
-		{
-			$lastNoWorking   = $lastNoWorking->next()->noWorking();
+		while ($lastNoWorking->date() <= $date_to) {
+			$lastNoWorking = $lastNoWorking->next()->noWorking();
 			$noWorkingList[] = $lastNoWorking->format($format);
 		}
 
@@ -304,12 +315,12 @@ class Calendar
 	/**
 	 * Находит и возвращает все предпраздничные дни в указанном промежутке дат в указанном формате
 	 *
-	 * @param   integer|string|\DateTime  $date_from  Начальная дата поиска
-	 * @param   integer|string|\DateTime  $date_to    Конечная дата поиска
-	 * @param   string|null               $format     Формат возвращаемых дат. см. https://www.php.net/manual/ru/datetime.format.php
+	 * @param integer|string|DateTime $date_from Начальная дата поиска
+	 * @param integer|string|DateTime $date_to Конечная дата поиска
+	 * @param string|null $format Формат возвращаемых дат. см. https://www.php.net/manual/ru/datetime.format.php
 	 *
-	 * @throws \Exception
-	 * @return array
+	 * @return string[]
+	 * @throws Exception
 	 */
 	public static function getPreHolidayListByInterval($date_from, $date_to, string $format = null): array
 	{
@@ -317,11 +328,10 @@ class Calendar
 
 		$preHolidayList = [];
 
-		$lastPreHoliday   = Calendar::find($date_from)->preHoliday();
+		$lastPreHoliday = Calendar::find($date_from)->preHoliday();
 		$preHolidayList[] = $lastPreHoliday->format($format);
-		while ($lastPreHoliday->date() <= $date_to)
-		{
-			$lastPreHoliday   = $lastPreHoliday->next()->preHoliday();
+		while ($lastPreHoliday->date() <= $date_to) {
+			$lastPreHoliday = $lastPreHoliday->next()->preHoliday();
 			$preHolidayList[] = $lastPreHoliday->format($format);
 		}
 
@@ -331,20 +341,19 @@ class Calendar
 	/**
 	 * Подготавливает корректные даты начала и конца интервала
 	 *
-	 * @param   integer|string|\DateTime  $date_from  Начальная дата интервала
-	 * @param   integer|string|\DateTime  $date_to    Конечная дата интервала
+	 * @param integer|string|DateTime $date_from Начальная дата интервала
+	 * @param integer|string|DateTime $date_to Конечная дата интервала
 	 *
-	 * @throws \Exception
+	 * @throws Exception
 	 */
 	protected static function prepareDateInterval(&$date_from, &$date_to)
 	{
 		$date_from = static::prepareDate($date_from);
-		$date_to   = static::prepareDate($date_to);
+		$date_to = static::prepareDate($date_to);
 
-		if ($date_from > $date_to)
-		{
-			$date_tmp  = $date_to;
-			$date_to   = $date_from;
+		if ($date_from > $date_to) {
+			$date_tmp = $date_to;
+			$date_to = $date_from;
 			$date_from = $date_tmp;
 			unset($date_tmp);
 		}
@@ -353,7 +362,7 @@ class Calendar
 	/**
 	 * Возвращает дату, отформатированную согласно переданному формату
 	 *
-	 * @param   string|null  $format  Шаблон результирующей строки с датой. см. https://www.php.net/manual/ru/datetime.format.php
+	 * @param string|null $format Шаблон результирующей строки с датой. см. https://www.php.net/manual/ru/datetime.format.php
 	 *
 	 * @return string
 	 */
@@ -376,11 +385,11 @@ class Calendar
 	 * Возвращает дату ближайшего рабочего дня
 	 *
 	 * @return Calendar
+	 * @throws Exception
 	 */
 	public function working(): Calendar
 	{
-		while (!static::isWorking(static::$date))
-		{
+		while (!static::isWorking(static::$date)) {
 			$this->next();
 		}
 
@@ -390,13 +399,12 @@ class Calendar
 	/**
 	 * Возвращает дату ближайшего праздничного дня
 	 *
-	 * @throws \Exception
 	 * @return Calendar
+	 * @throws Exception
 	 */
 	public function holiday(): Calendar
 	{
-		while (!static::isHoliday(static::$date) && static::haveData())
-		{
+		while (!static::isHoliday(static::$date) && static::haveData()) {
 			$this->next();
 		}
 
@@ -406,10 +414,10 @@ class Calendar
 	/**
 	 * Проверяет, содержится ли заданная дата в справочнике дат библиотеки
 	 *
-	 * @param   \DateTime|string  $date  Дата, которую нужно проверить
+	 * @param DateTime|string $date Дата, которую нужно проверить
 	 *
-	 * @throws \Exception
 	 * @return bool
+	 * @throws Exception
 	 */
 	protected static function haveData($date = null): bool
 	{
@@ -421,13 +429,12 @@ class Calendar
 	/**
 	 * Возвращает дату ближайшего предпраздничного дня
 	 *
-	 * @throws \Exception
 	 * @return Calendar
+	 * @throws Exception
 	 */
 	public function preHoliday(): Calendar
 	{
-		while (!static::isPreHoliday(static::$date) && static::haveData($this->date()))
-		{
+		while (!static::isPreHoliday(static::$date) && static::haveData($this->date())) {
 			$this->next();
 		}
 
@@ -437,13 +444,12 @@ class Calendar
 	/**
 	 * Возвращает дату ближайшего нерабочего дня
 	 *
-	 * @throws \Exception
 	 * @return Calendar
+	 * @throws Exception
 	 */
 	public function noWorking(): Calendar
 	{
-		while (!static::isNoWorking(static::$date) && static::haveData($this->date()))
-		{
+		while (!static::isNoWorking(static::$date) && static::haveData($this->date())) {
 			$this->next();
 		}
 
@@ -457,7 +463,7 @@ class Calendar
 	 */
 	public function next(): Calendar
 	{
-		static::$date->add(new \DateInterval('P1D'));
+		static::$date->add(new DateInterval('P1D'));
 
 		return $this;
 	}
@@ -469,7 +475,7 @@ class Calendar
 	 */
 	public function prev(): Calendar
 	{
-		static::$date->sub(new \DateInterval('P1D'));
+		static::$date->sub(new DateInterval('P1D'));
 
 		return $this;
 	}
@@ -477,31 +483,30 @@ class Calendar
 	/**
 	 * Возвращает экземпляр класса
 	 *
-	 * @throws \Exception
 	 * @return Calendar
+	 * @throws Exception
 	 */
 	public static function getInstance(): Calendar
 	{
-		return static::$_instance ?: static::find();
+		return static::$_instance ?? static::find();
 	}
 
 	/**
 	 * Инициализирует экземпляр класса с указанной датой
 	 *
-	 * @param   null|string|\DateTime  $date  Дата, с которой нужно инициализировать класс. null - сегодняшняя дата
+	 * @param null|string|DateTime $date Дата, с которой нужно инициализировать класс. null - сегодняшняя дата
 	 *
-	 * @throws \Exception
 	 * @return Calendar
+	 * @throws Exception
 	 */
 	public static function find($date = null): Calendar
 	{
 		static::$date = static::prepareDate($date);
 
-		if (!static::$_instance)
-		{
-			$json              = file_get_contents(dirname(__FILE__) . '/data/holidays.json');
+		if (!isset(static::$_instance)) {
+			$json = file_get_contents(dirname(__FILE__) . '/data/holidays.json');
 			static::$_instance = new self();
-			static::$holidays  = json_decode($json, true);
+			static::$holidays = json_decode($json, true);
 		}
 
 		return static::$_instance;
@@ -510,20 +515,20 @@ class Calendar
 	/**
 	 * Преобразует дату в объект \DateTime
 	 *
-	 * @param   string|\DateTime  $date  Объект или строка даты/времени. Объяснение корректных форматов см по ссылке https://www.php.net/manual/ru/datetime.formats.php
+	 * @param null|int|string|DateTime $date Объект или строка даты/времени. Объяснение корректных форматов см по ссылке https://www.php.net/manual/ru/datetime.formats.php
 	 *
-	 * @throws \Exception
-	 * @return \DateTime
+	 * @throws Exception
+	 * @return DateTime
 	 */
-	protected static function prepareDate($date): \DateTime
+	protected static function prepareDate($date = null): DateTime
 	{
-		if (is_null($date) && static::$date)
-		{
+		if (is_null($date) && isset(static::$date)) {
 			$date = static::$date;
-		}
-		elseif (!$date instanceof \DateTime)
-		{
-			$date = new \DateTime($date);
+		} elseif (!$date instanceof DateTime) {
+			if (is_int($date)) {
+				$date = '@' . (string)$date;
+			}
+			$date = new DateTime((string)$date);
 		}
 
 		return $date;
@@ -532,13 +537,12 @@ class Calendar
 	/**
 	 * Возвращает справочник дат
 	 *
-	 * @throws \Exception
 	 * @return array
+	 * @throws Exception
 	 */
 	protected static function getHolidays(): array
 	{
-		if (!static::$_instance)
-		{
+		if (!isset(static::$_instance)) {
 			static::find();
 		}
 
