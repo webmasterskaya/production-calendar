@@ -1,0 +1,70 @@
+name: "Update production calendar"
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: production-calendar-update
+  cancel-in-progress: false
+
+jobs:
+  update-calendar:
+    name: Update current year
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup PHP with Composer and extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          extensions: curl, dom, libxml, json
+          coverage: none
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Get current year
+        id: calendar
+        run: echo "year=$(date +'%Y')" >> "$GITHUB_OUTPUT"
+
+      - name: Update current year calendar
+        run: composer calendar-update
+
+      - name: Validate updated calendar
+        run: composer check
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: master
+          branch: automation/update-production-calendar
+          delete-branch: true
+          add-paths: src/data/holidays.json
+          commit-message: "Обновление производственного календаря за ${{ steps.calendar.outputs.year }} год"
+          title: "Обновление производственного календаря за ${{ steps.calendar.outputs.year }} год"
+          body: |
+            Автоматическое еженедельное обновление производственного календаря за ${{ steps.calendar.outputs.year }} год.
+
+            Данные получены командой `composer calendar-update`.
