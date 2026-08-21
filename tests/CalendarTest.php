@@ -5,6 +5,7 @@ namespace Webmasterskaya\ProductionCalendar\Tests;
 use DateTime;
 use Exception;
 use PHPUnit\Framework\TestCase;
+use UnexpectedValueException;
 use Webmasterskaya\ProductionCalendar\Calendar;
 
 final class CalendarTest extends TestCase
@@ -230,7 +231,7 @@ final class CalendarTest extends TestCase
 	 */
 	public function testCorrectSimultaneousDefinitionOfTheWorkingAndNoWorking()
 	{
-		$this->assertTrue(Calendar::isWorking('24.06.2020'));
+		$this->assertFalse(Calendar::isWorking('24.06.2020'));
 		$this->assertTrue(Calendar::isNoWorking('24.06.2020'));
 		$this->assertFalse(Calendar::isWeekend('24.06.2020'));
 	}
@@ -314,7 +315,89 @@ final class CalendarTest extends TestCase
 	 */
 	public function testTimestamp()
 	{
-		$this->assertEquals(1601510400, Calendar::find('01.10.2020')->timestamp());
+		$this->assertEquals((new DateTime('01.10.2020'))->getTimestamp(), Calendar::find('01.10.2020')->timestamp());
+	}
+
+	/**
+	 * Проверяем, что методы получения списков дат не возвращают значения за пределами заданного интервала
+	 *
+	 * @throws Exception
+	 * @testdox Списки дат ограничены началом и концом заданного интервала
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::getHolidaysListByInterval
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::getWorkingListByInterval
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::getNoWorkingListByInterval
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::getPreHolidayListByInterval
+	 */
+	public function testIntervalListsRespectBothBounds()
+	{
+		$this->assertSame(
+			['2025-01-13'],
+			Calendar::getWorkingListByInterval('2025-01-13', '2025-01-13')
+		);
+		$this->assertSame([], Calendar::getHolidaysListByInterval('2025-01-13', '2025-01-13'));
+		$this->assertSame(
+			['01.05.2025'],
+			Calendar::getHolidaysListByInterval('2025-05-01', '2025-05-01', 'd.m.Y')
+		);
+		$this->assertSame(
+			['2020-06-24'],
+			Calendar::getNoWorkingListByInterval('2020-06-24', '2020-06-24')
+		);
+		$this->assertSame(
+			['2025-03-07'],
+			Calendar::getPreHolidayListByInterval('2025-03-07', '2025-03-07')
+		);
+	}
+
+	/**
+	 * Проверяем корректность обработки интервала, границы которого переданы в обратном порядке
+	 *
+	 * @throws Exception
+	 * @testdox Корректная обработка границ интервала, переданных в обратном порядке
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::getHolidaysListByInterval
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::prepareDateInterval
+	 */
+	public function testIntervalBoundsCanBePassedInReverseOrder()
+	{
+		$this->assertSame(
+			['2025-05-01'],
+			Calendar::getHolidaysListByInterval('2025-05-01', '2025-04-30')
+		);
+	}
+
+	/**
+	 * Проверяем, что изменение входного или возвращённого объекта DateTime не изменяет внутреннее состояние календаря
+	 *
+	 * @throws Exception
+	 * @testdox Внутреннее состояние календаря изолировано от изменений объектов DateTime
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::find
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::date
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::prepareDate
+	 */
+	public function testCalendarDoesNotExposeMutableDateState()
+	{
+		$source = new DateTime('2025-01-13');
+		Calendar::find($source)->next();
+		$this->assertSame('2025-01-13', $source->format('Y-m-d'));
+
+		$exposed = Calendar::date();
+		$exposed->modify('+10 days');
+		$this->assertSame('2025-01-14', Calendar::date()->format('Y-m-d'));
+	}
+
+	/**
+	 * Проверяем выброс исключения при поиске праздника за пределами доступного справочника дат
+	 *
+	 * @throws Exception
+	 * @testdox Поиск праздника без доступных данных завершается понятным исключением
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::holiday
+	 * @covers  \Webmasterskaya\ProductionCalendar\Calendar::haveData
+	 */
+	public function testHolidaySearchFailsWhenCalendarDataIsUnavailable()
+	{
+		$this->expectException(UnexpectedValueException::class);
+
+		Calendar::find('9999-01-01')->holiday();
 	}
 
 	/**

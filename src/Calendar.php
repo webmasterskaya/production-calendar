@@ -5,9 +5,11 @@ namespace Webmasterskaya\ProductionCalendar;
 use DateInterval;
 use DateTime;
 use Exception;
+use UnexpectedValueException;
 
 use function dirname;
 use function in_array;
+use function is_array;
 use function is_int;
 use function is_null;
 
@@ -58,7 +60,7 @@ class Calendar
 	 */
 	public static function date(): DateTime
 	{
-		return static::$date;
+		return clone static::$date;
 	}
 
 	/**
@@ -83,8 +85,10 @@ class Calendar
 	 */
 	public static function isWorking($date = null, array $weekend = [6, 0]): bool
 	{
-		return static::findDateInArray($date, static::getWorksByYear($date))
-			|| static::isPreHoliday($date) || (!static::isHoliday($date) && !static::isWeekend($date, $weekend));
+		return !static::isNoWorking($date)
+			&& (static::findDateInArray($date, static::getWorksByYear($date))
+				|| static::isPreHoliday($date)
+				|| (!static::isHoliday($date) && !static::isWeekend($date, $weekend)));
 	}
 
 	/**
@@ -244,20 +248,9 @@ class Calendar
 	 * @return array
 	 * @throws Exception
 	 */
-	public static function getHolidaysListByInterval($date_from, $date_to, string $format = null): array
+	public static function getHolidaysListByInterval($date_from, $date_to, ?string $format = null): array
 	{
-		static::prepareDateInterval($date_from, $date_to);
-
-		$holidaysList = [];
-
-		$lastHoliday = Calendar::find($date_from)->holiday();
-		$holidaysList[] = $lastHoliday->format($format);
-		while ($lastHoliday->date() <= $date_to) {
-			$lastHoliday = $lastHoliday->next()->holiday();
-			$holidaysList[] = $lastHoliday->format($format);
-		}
-
-		return $holidaysList;
+		return static::getListByInterval($date_from, $date_to, $format, [static::class, 'isHoliday']);
 	}
 
 	/**
@@ -270,20 +263,9 @@ class Calendar
 	 * @return array
 	 * @throws Exception
 	 */
-	public static function getWorkingListByInterval($date_from, $date_to, string $format = null): array
+	public static function getWorkingListByInterval($date_from, $date_to, ?string $format = null): array
 	{
-		static::prepareDateInterval($date_from, $date_to);
-
-		$workingList = [];
-
-		$lastWorking = Calendar::find($date_from)->working();
-		$workingList[] = $lastWorking->format($format);
-		while ($lastWorking->date() <= $date_to) {
-			$lastWorking = $lastWorking->next()->working();
-			$workingList[] = $lastWorking->format($format);
-		}
-
-		return $workingList;
+		return static::getListByInterval($date_from, $date_to, $format, [static::class, 'isWorking']);
 	}
 
 	/**
@@ -296,20 +278,9 @@ class Calendar
 	 * @return array
 	 * @throws Exception
 	 */
-	public static function getNoWorkingListByInterval($date_from, $date_to, string $format = null): array
+	public static function getNoWorkingListByInterval($date_from, $date_to, ?string $format = null): array
 	{
-		static::prepareDateInterval($date_from, $date_to);
-
-		$noWorkingList = [];
-
-		$lastNoWorking = Calendar::find($date_from)->noWorking();
-		$noWorkingList[] = $lastNoWorking->format($format);
-		while ($lastNoWorking->date() <= $date_to) {
-			$lastNoWorking = $lastNoWorking->next()->noWorking();
-			$noWorkingList[] = $lastNoWorking->format($format);
-		}
-
-		return $noWorkingList;
+		return static::getListByInterval($date_from, $date_to, $format, [static::class, 'isNoWorking']);
 	}
 
 	/**
@@ -322,20 +293,33 @@ class Calendar
 	 * @return string[]
 	 * @throws Exception
 	 */
-	public static function getPreHolidayListByInterval($date_from, $date_to, string $format = null): array
+	public static function getPreHolidayListByInterval($date_from, $date_to, ?string $format = null): array
+	{
+		return static::getListByInterval($date_from, $date_to, $format, [static::class, 'isPreHoliday']);
+	}
+
+	/**
+	 * @param int|string|DateTime $date_from
+	 * @param int|string|DateTime $date_to
+	 * @param callable $predicate
+	 *
+	 * @throws Exception
+	 */
+	protected static function getListByInterval($date_from, $date_to, ?string $format, callable $predicate): array
 	{
 		static::prepareDateInterval($date_from, $date_to);
+		$dates = [];
+		$cursor = static::find($date_from);
 
-		$preHolidayList = [];
+		while ($cursor->date() <= $date_to) {
+			if ($predicate($cursor->date())) {
+				$dates[] = $cursor->format($format);
+			}
 
-		$lastPreHoliday = Calendar::find($date_from)->preHoliday();
-		$preHolidayList[] = $lastPreHoliday->format($format);
-		while ($lastPreHoliday->date() <= $date_to) {
-			$lastPreHoliday = $lastPreHoliday->next()->preHoliday();
-			$preHolidayList[] = $lastPreHoliday->format($format);
+			$cursor->next();
 		}
 
-		return $preHolidayList;
+		return $dates;
 	}
 
 	/**
@@ -366,7 +350,7 @@ class Calendar
 	 *
 	 * @return string
 	 */
-	public function format(string $format = null): string
+	public function format(?string $format = null): string
 	{
 		return $this->date()->format($format ?: $this->format);
 	}
@@ -407,6 +391,9 @@ class Calendar
 		while (!static::isHoliday(static::$date) && static::haveData()) {
 			$this->next();
 		}
+		if (!static::isHoliday(static::$date)) {
+			throw new UnexpectedValueException('No holiday data is available on or after the selected date.');
+		}
 
 		return $this;
 	}
@@ -437,6 +424,9 @@ class Calendar
 		while (!static::isPreHoliday(static::$date) && static::haveData($this->date())) {
 			$this->next();
 		}
+		if (!static::isPreHoliday(static::$date)) {
+			throw new UnexpectedValueException('No pre-holiday data is available on or after the selected date.');
+		}
 
 		return $this;
 	}
@@ -451,6 +441,9 @@ class Calendar
 	{
 		while (!static::isNoWorking(static::$date) && static::haveData($this->date())) {
 			$this->next();
+		}
+		if (!static::isNoWorking(static::$date)) {
+			throw new UnexpectedValueException('No non-working day data is available on or after the selected date.');
 		}
 
 		return $this;
@@ -505,8 +498,17 @@ class Calendar
 
 		if (!isset(static::$_instance)) {
 			$json = file_get_contents(dirname(__FILE__) . '/data/holidays.json');
+			if ($json === false) {
+				throw new Exception('Unable to read the production calendar data file.');
+			}
+
+			$holidays = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+			if (!is_array($holidays)) {
+				throw new UnexpectedValueException('Invalid production calendar data file.');
+			}
+
+			static::$holidays = $holidays;
 			static::$_instance = new self();
-			static::$holidays = json_decode($json, true);
 		}
 
 		return static::$_instance;
@@ -531,7 +533,7 @@ class Calendar
 			$date = new DateTime((string)$date);
 		}
 
-		return $date;
+		return clone $date;
 	}
 
 	/**
