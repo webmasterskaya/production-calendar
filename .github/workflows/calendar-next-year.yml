@@ -1,0 +1,99 @@
+name: "Check next production calendar"
+
+on:
+  schedule:
+    - cron: "29 4 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: next-production-calendar-check
+  cancel-in-progress: false
+
+jobs:
+  check-next-year:
+    name: Check next year
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check next year availability
+        id: calendar
+        shell: bash
+        run: |
+          year=$(($(date +'%Y') + 1))
+          url="https://www.consultant.ru/law/ref/calendar/proizvodstvennye/${year}/"
+          echo "year=${year}" >> "$GITHUB_OUTPUT"
+
+          if ! status=$(curl --silent --show-error --location --output /dev/null --write-out "%{http_code}" "$url"); then
+            echo "::error::Не удалось проверить публикацию производственного календаря за ${year} год"
+            exit 1
+          fi
+
+          if [[ "$status" == "404" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Производственный календарь за ${year} год ещё не опубликован"
+            exit 0
+          fi
+
+          if [[ "$status" != "200" ]]; then
+            echo "::error::Сайт источника вернул HTTP ${status} при проверке календаря за ${year} год"
+            exit 1
+          fi
+
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Setup PHP with Composer and extensions
+        if: steps.calendar.outputs.available == 'true'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          extensions: curl, dom, libxml, json
+          coverage: none
+
+      - name: Get Composer cache directory
+        if: steps.calendar.outputs.available == 'true'
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        if: steps.calendar.outputs.available == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        if: steps.calendar.outputs.available == 'true'
+        run: composer install --no-interaction --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Update next year calendar
+        if: steps.calendar.outputs.available == 'true'
+        run: composer calendar-update ${{ steps.calendar.outputs.year }}
+
+      - name: Validate updated calendar
+        if: steps.calendar.outputs.available == 'true'
+        run: composer check
+
+      - name: Create pull request
+        if: steps.calendar.outputs.available == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: master
+          branch: automation/add-next-production-calendar
+          delete-branch: true
+          add-paths: src/data/holidays.json
+          commit-message: "Добавление производственного календаря за ${{ steps.calendar.outputs.year }} год"
+          title: "Добавление производственного календаря за ${{ steps.calendar.outputs.year }} год"
+          body: |
+            Обнаружен опубликованный производственный календарь за ${{ steps.calendar.outputs.year }} год.
+
+            Данные получены командой `composer calendar-update ${{ steps.calendar.outputs.year }}`.
