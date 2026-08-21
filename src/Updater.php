@@ -6,14 +6,19 @@ use DOMDocument;
 use DOMElement;
 use DOMXPath;
 use Exception;
+use RuntimeException;
+use UnexpectedValueException;
 
 use function dirname;
+use function in_array;
+use function is_array;
 use function is_string;
+use function sprintf;
+use function strlen;
 
 class Updater
 {
 	protected const OUTPUT_PATH = 'data/holidays.json';
-	protected const BACKUP_PATH = 'data/backup.holidays.json';
 
 	/**
 	 * @throws Exception
@@ -27,13 +32,10 @@ class Updater
 			$arg = $args[0] ?? null;
 		}
 
-		if (is_string($arg)) {
-			$arg = trim($arg);
+		if (is_string($arg) && strtolower(trim($arg)) === 'all') {
+			static::updateAll();
 
-			if (strtolower($arg) === 'all') {
-				static::updateAll();
-				return;
-			}
+			return;
 		}
 
 		static::update($arg);
@@ -48,173 +50,267 @@ class Updater
 	}
 
 	/**
-	 * Обновляет справочник дат за весь доступный период (2013 - текущий год и следующий, если опубликован)
+	 * Обновляет справочник дат за весь доступный период.
 	 *
-	 * @return void
 	 * @throws Exception
 	 */
 	public static function updateAll()
 	{
-		$output = dirname(__FILE__) . '/' . ltrim(static::OUTPUT_PATH, '/');
-		$backup = dirname(__FILE__) . '/' . ltrim(static::BACKUP_PATH, '/');
+		$dates = [];
+		$currentYear = (int)date('Y');
 
-		if (file_exists($output)) {
-			copy($output, $backup);
-			unlink($output);
+		for ($year = 2013; $year <= $currentYear; $year++) {
+			$dates[$year] = static::downloadYear($year);
 		}
-
-		$year = 2013;
-		$cur_year = date('Y');
 
 		try {
-			while ($year <= $cur_year) {
-				static::update($year++);
-			}
-
-			try {
-				static::update($year);
-			} catch (Exception $e) {
-				//do nothing
-			}
-		} catch (Exception $e) {
-			if (file_exists($backup)) {
-				copy($backup, $output);
-			}
-
-			throw $e;
-		} finally {
-			if (file_exists($backup)) {
-				unlink($backup);
-			}
+			$dates[$currentYear + 1] = static::downloadYear($currentYear + 1);
+		} catch (Exception $exception) {
+			// Календарь следующего года может быть ещё не опубликован.
 		}
+
+		static::writeDates($dates);
 	}
 
 	/**
-	 * Обновляет справочник дат за указанный год
+	 * Обновляет справочник дат за указанный год.
 	 *
-	 * @param int|string $year Год, за который нужно получить справочник. null - екущий год
+	 * @param int|string|null $year
 	 *
 	 * @throws Exception
 	 */
 	public static function update($year = null)
 	{
-		if (empty($year)) {
-			$year = date('Y');
+		$year = static::normalizeYear($year);
+		$dates = static::loadDates();
+		$dates[$year] = static::downloadYear($year);
+		ksort($dates, SORT_NUMERIC);
+
+		static::writeDates($dates);
+	}
+
+	/**
+	 * @param int|string|null $year
+	 */
+	protected static function normalizeYear($year): int
+	{
+		if ($year === null || $year === '') {
+			return (int)date('Y');
 		}
 
-		if ($year == 2020) {
-			$year = '2020b';
+		$year = trim((string)$year);
+		if (!preg_match('/^\d{4}$/', $year) || (int)$year < 2013) {
+			throw new UnexpectedValueException("Invalid production calendar year: $year");
 		}
 
-		$uri = "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/$year/";
+		return (int)$year;
+	}
 
-		$year = (int)$year;
-
-		$output = dirname(__FILE__) . '/' . ltrim(static::OUTPUT_PATH, '/');
-
-		$ch = curl_init($uri);
-		curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: text/html; charset=utf-8']);
-		curl_setopt($ch, CURLOPT_FAILONERROR, true);
-		curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-
-		if (($result = curl_exec($ch)) === false) {
-			throw new Exception(curl_error($ch), curl_errno($ch));
+	/**
+	 * @throws Exception
+	 */
+	protected static function downloadYear(int $year): array
+	{
+		switch (true) {
+			case $year === 2020:
+				$sourceYear = '2020b';
+				break;
+			case $year === 2024:
+				$sourceYear = '2024b';
+				break;
+			default:
+				$sourceYear = (string)$year;
 		}
 
+		$uri = "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/$sourceYear/";
+
+		return static::parseYear(static::fetch($uri), $year);
+	}
+
+	/**
+	 * @throws RuntimeException
+	 */
+	protected static function fetch(string $uri): string
+	{
+		$curl = curl_init($uri);
+		if ($curl === false) {
+			throw new RuntimeException("Unable to initialize cURL for $uri");
+		}
+
+		curl_setopt_array($curl, [
+			CURLOPT_HTTPHEADER => ['Content-Type: text/html; charset=utf-8'],
+			CURLOPT_FAILONERROR => true,
+			CURLOPT_CONNECTTIMEOUT => 10,
+			CURLOPT_TIMEOUT => 30,
+			CURLOPT_RETURNTRANSFER => true,
+		]);
+
+		$result = curl_exec($curl);
+		if ($result === false) {
+			$message = curl_error($curl);
+			$code = curl_errno($curl);
+			curl_close($curl);
+
+			throw new RuntimeException("Unable to download $uri: $message", $code);
+		}
+
+		curl_close($curl);
+
+		return $result;
+	}
+
+	/**
+	 * @throws UnexpectedValueException
+	 */
+	protected static function parseYear(string $html, int $year): array
+	{
 		$document = new DOMDocument();
+		$previousErrorsSetting = libxml_use_internal_errors(true);
 
-		// Отключает ошибки парсинга HTML5 элементов
-		libxml_use_internal_errors(true);
-		$document->loadHTML($result);
-		libxml_use_internal_errors(false);
+		try {
+			$loaded = $document->loadHTML($html, LIBXML_NONET);
+		} finally {
+			libxml_clear_errors();
+			libxml_use_internal_errors($previousErrorsSetting);
+		}
+
+		if (!$loaded) {
+			throw new UnexpectedValueException("Unable to parse production calendar HTML for $year");
+		}
 
 		$xpath = new DOMXPath($document);
+		$tables = $xpath->query("//table[contains(concat(' ', normalize-space(@class), ' '), ' cal ')]");
+		if ($tables === false || $tables->length !== 12) {
+			$count = $tables === false ? 0 : $tables->length;
 
-		$tables_nodes = $xpath->query("//*/table[contains(concat(' ', normalize-space(@class), ' '), cal)]");
-
-		if (file_exists($output)) {
-			$dates = json_decode(file_get_contents($output), true, 128, JSON_OBJECT_AS_ARRAY);
-			if (json_last_error() !== JSON_ERROR_NONE) {
-				throw new Exception(json_last_error_msg(), 1);
-			}
-		} else {
-			$dates = [];
+			throw new UnexpectedValueException("Expected 12 calendar tables for $year, found $count");
 		}
 
-		$dates[$year] = [
+		$dates = [
 			'holidays' => [],
 			'works' => [],
 			'preholidays' => [],
 			'nowork' => [],
 		];
 
-		$m = 0;
+		/** @var DOMElement $table */
+		foreach ($tables as $index => $table) {
+			$month = $index + 1;
 
-		/** @var DOMElement $table_node */
-		foreach ($tables_nodes as $table_node) {
-			// Дополнительная проверка на косяки, при выборке таблиц по классу
-			if (strpos($table_node->getAttribute('class'), 'cal') === false) {
-				continue;
-			}
-
-			$m++;
-			$tds_nodes = $table_node->getElementsByTagName('td');
-			$month = str_pad($m, 2, '0', STR_PAD_LEFT);
-
-			/** @var DOMElement $td_node */
-			foreach ($tds_nodes as $td_node) {
-				$day = str_pad(
-					preg_replace('/\D/', '', $td_node->textContent),
-					2,
-					'0',
-					STR_PAD_LEFT
-				);
-
-				$td_classname = $td_node->getAttribute('class');
-
-				if (strpos($td_classname, 'inactively') !== false) {
+			/** @var DOMElement $cell */
+			foreach ($table->getElementsByTagName('td') as $cell) {
+				if (static::hasClass($cell, 'inactively')) {
 					continue;
 				}
 
-				$date = $year . '-' . $month . '-' . $day;
-				$idx = '';
-
-				if (strpos($td_classname, 'holiday') !== false) {
-					$idx = 'holidays';
-				}
-
-				if (strpos($td_classname, 'nowork') !== false) {
-					$idx = 'nowork';
-				}
-
-				if (strpos($td_classname, 'preholiday') !== false) {
-					$idx = 'preholidays';
-				}
-
-				if (strpos($td_classname, 'work') !== false && $idx !== 'nowork') {
-					$idx = 'works';
-				}
-
-				if (empty($idx)) {
+				$category = static::getCategory($cell);
+				if ($category === null) {
 					continue;
 				}
 
-				$dates[$year][$idx][] = $date;
+				$day = (int)preg_replace('/\D+/', '', $cell->textContent);
+				if (!checkdate($month, $day, $year)) {
+					throw new UnexpectedValueException("Invalid date in production calendar HTML for $year");
+				}
+
+				$dates[$category][] = sprintf('%04d-%02d-%02d', $year, $month, $day);
 			}
 		}
 
-		if (
-			!empty($dates[$year]['holidays'])
-			&& !empty($dates[$year]['preholidays'])
-		) {
-			$dates_json = json_encode($dates);
+		if (empty($dates['holidays']) || empty($dates['preholidays'])) {
+			throw new UnexpectedValueException("Incomplete production calendar data for $year");
+		}
 
-			if (json_last_error() !== JSON_ERROR_NONE) {
-				throw new Exception(json_last_error_msg(), 1);
+		foreach ($dates as &$categoryDates) {
+			$categoryDates = array_values(array_unique($categoryDates));
+		}
+		unset($categoryDates);
+
+		return $dates;
+	}
+
+	protected static function getCategory(DOMElement $cell): ?string
+	{
+		if (static::hasClass($cell, 'nowork')) {
+			return 'nowork';
+		}
+
+		if (static::hasClass($cell, 'preholiday')) {
+			return 'preholidays';
+		}
+
+		if (static::hasClass($cell, 'holiday')) {
+			return 'holidays';
+		}
+
+		if (static::hasClass($cell, 'work')) {
+			return 'works';
+		}
+
+		return null;
+	}
+
+	protected static function hasClass(DOMElement $element, string $class): bool
+	{
+		$classes = preg_split('/\s+/', trim($element->getAttribute('class')), -1, PREG_SPLIT_NO_EMPTY);
+
+		return in_array($class, $classes, true);
+	}
+
+	/**
+	 * @throws Exception
+	 */
+	protected static function loadDates(): array
+	{
+		$output = static::getOutputPath();
+		if (!file_exists($output)) {
+			return [];
+		}
+
+		$json = file_get_contents($output);
+		if ($json === false) {
+			throw new RuntimeException("Unable to read production calendar data from $output");
+		}
+
+		$dates = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+		if (!is_array($dates)) {
+			throw new UnexpectedValueException("Invalid production calendar data in $output");
+		}
+
+		return $dates;
+	}
+
+	/**
+	 * @throws Exception
+	 */
+	protected static function writeDates(array $dates): void
+	{
+		$output = static::getOutputPath();
+		$json = json_encode($dates, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+		$temporary = tempnam(dirname($output), 'holidays.');
+
+		if ($temporary === false) {
+			throw new RuntimeException("Unable to create a temporary file next to $output");
+		}
+
+		try {
+			$written = file_put_contents($temporary, $json, LOCK_EX);
+			if ($written !== strlen($json)) {
+				throw new RuntimeException("Unable to write complete production calendar data to $temporary");
 			}
 
-			file_put_contents($output, $dates_json);
+			if (!rename($temporary, $output)) {
+				throw new RuntimeException("Unable to replace production calendar data in $output");
+			}
+		} finally {
+			if (file_exists($temporary)) {
+				unlink($temporary);
+			}
 		}
+	}
+
+	protected static function getOutputPath(): string
+	{
+		return dirname(__FILE__) . '/' . ltrim(static::OUTPUT_PATH, '/');
 	}
 }
