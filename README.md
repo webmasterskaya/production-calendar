@@ -14,7 +14,7 @@ PHP библиотека, которая определяет рабочие, п
 Добавьте пакет в зависимости проекта
 
 ```shell
-composer require webmasterskaya\ProductionCalendar
+composer require webmasterskaya\production-calendar
 ```
 
 ## Как работает
